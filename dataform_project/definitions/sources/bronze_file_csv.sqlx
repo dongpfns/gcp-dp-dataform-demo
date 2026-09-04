@@ -1,0 +1,7 @@
+config {
+  type: "declaration",
+  database: dataform.projectConfig.defaultDatabase,
+  schema: "bronze_file_csv",
+  name: "sales_transaction",
+  description: "CSV連携の売上トランザクション生データ（cf-gcs-csv-trigger / P2 範囲洗替）"
+}

@@ -1,0 +1,22 @@
+# Dataform プロジェクト設定
+# 規約: v2/21_transform.md 5節
+#
+# vars の値はプレースホルダ。実行時は Workflows が compilationResults.create の
+# codeCompilationConfig.vars で上書きする（v2/21_transform.md 5.3）。
+# workflowInvocations 側に直接 vars は渡せない点に注意。
+
+defaultProject: example-dev
+defaultDataset: silver_common
+defaultLocation: asia-northeast1
+defaultAssertionDataset: ops_dataquality
+
+dataformCoreVersion: 3.0.2
+
+vars:
+  env: dev
+  # 実行のたびに Workflows から注入される（直書きの CURRENT_TIMESTAMP() を使わないため）
+  etl_ts: "1970-01-01T00:00:00Z"
+  batch_id: "unset"
+  # 範囲洗替（P2）のウィンドウ幅（月数）。
+  # 取込側（app/common/window.py の WINDOW_MONTHS）と必ず同じ値にすること。
+  window_months: "14"

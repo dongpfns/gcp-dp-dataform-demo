@@ -1,0 +1,17 @@
+[
+  { "name": "account_id",             "type": "STRING",    "mode": "REQUIRED", "description": "取引先ID（Salesforce Account.Id 由来のシステム内部識別子）" },
+  { "name": "account_cd",             "type": "STRING",    "mode": "NULLABLE", "description": "取引先コード（業務上のコード値。ゼロ埋め6桁）" },
+  { "name": "account_name",           "type": "STRING",    "mode": "NULLABLE", "description": "取引先名称" },
+  { "name": "area_cd",                "type": "STRING",    "mode": "NULLABLE", "description": "エリアコード（01〜10。ゼロ埋め2桁）" },
+  { "name": "contract_status_cd",     "type": "STRING",    "mode": "NULLABLE", "description": "契約状況コード（10:見込 / 20:契約中 / 90:解約）" },
+  { "name": "is_active",              "type": "BOOL",      "mode": "NULLABLE", "description": "有効フラグ（ソース側のIsActive）" },
+  { "name": "annual_revenue_jpy",     "type": "NUMERIC",   "mode": "NULLABLE", "description": "年間売上高（円）" },
+  { "name": "record_created_at_utc",  "type": "TIMESTAMP", "mode": "NULLABLE", "description": "ソース側のレコード作成日時（UTC）。Salesforce CreatedDate 由来" },
+  { "name": "record_updated_at_utc",  "type": "TIMESTAMP", "mode": "NULLABLE", "description": "ソース側のレコード更新日時（UTC）。Salesforce LastModifiedDate 由来" },
+
+  { "name": "etl_loaded_at",          "type": "TIMESTAMP", "mode": "REQUIRED", "description": "【監査】SILVER層への初回挿入日時（UTC）" },
+  { "name": "etl_updated_at",         "type": "TIMESTAMP", "mode": "REQUIRED", "description": "【監査】SILVER層のレコード最終更新日時（UTC）" },
+  { "name": "etl_source_system",      "type": "STRING",    "mode": "REQUIRED", "description": "【監査】由来ソースシステム名（salesforce）" },
+  { "name": "etl_batch_id",           "type": "STRING",    "mode": "REQUIRED", "description": "【監査】パイプライン実行ID（run_id）" },
+  { "name": "is_deleted",             "type": "BOOL",      "mode": "REQUIRED", "description": "【監査】論理削除フラグ。true = ソース側で削除済（CDC検知）" }
+]

@@ -1,0 +1,92 @@
+config {
+  type: "incremental",
+  schema: "silver_common",
+  name: "d_account",
+  uniqueKey: ["account_id"],
+  tags: ["silver", "silver_common"],
+  description: "ユーザーマスタ（外部ユーザーAPI由来）。P1 全件洗替のため物理削除の検知が可能",
+  bigquery: {
+    // ディメンションはクラスタ必須（v2/11_naming_bigquery.md 3.2）
+    clusterBy: ["account_id"]
+  },
+  assertions: {
+    uniqueKey: ["account_id"],
+    nonNull: ["account_id", "etl_loaded_at", "etl_updated_at", "is_deleted"]
+  },
+  columns: {
+    account_id: "ユーザーID（外部ユーザーAPI の id 由来）",
+    account_cd: "ユーザーコード（ゼロ埋め6桁）",
+    account_name: "氏名",
+    area_cd: "エリアコード（01〜10。ゼロ埋め2桁）",
+    contract_status_cd: "契約状況コード（10:見込 / 20:契約中 / 90:解約）",
+    is_active: "有効フラグ",
+    annual_revenue_jpy: "年間売上高（円）",
+    record_created_at_utc: "ソース側のレコード作成日時（UTC）",
+    record_updated_at_utc: "ソース側のレコード更新日時（UTC）",
+    etl_loaded_at: "【監査】初回挿入日時（UTC）",
+    etl_updated_at: "【監査】最終更新日時（UTC）",
+    etl_source_system: "【監査】由来ソースシステム名",
+    etl_batch_id: "【監査】パイプライン実行ID",
+    is_deleted: "【監査】論理削除フラグ"
+  }
+}
+
+js {
+  const { auditColumns, loadedAt } = require("includes/audit_columns");
+}
+
+-- SILVERで行うのは「1レコード内で完結する機械的変換」のみ。
+-- GROUP BY・ウィンドウ関数による派生指標は禁止（v2/11_naming_bigquery.md 4.3）。
+SELECT
+  -- 列の選択と改名：BRONZEのソース列名 → v2/10・11章の命名へ
+  CAST(src.id AS STRING)                                    AS account_id,
+  LPAD(TRIM(CAST(src.userCode AS STRING)), 6, '0')          AS account_cd,
+  TRIM(src.name)                                            AS account_name,
+  -- コード値の標準化（_code ではなく _cd。ゼロ埋め2桁に揃える）
+  LPAD(TRIM(CAST(src.areaCode AS STRING)), 2, '0')          AS area_cd,
+  CASE TRIM(src.status)
+    WHEN 'prospect' THEN '10'
+    WHEN 'active'   THEN '20'
+    WHEN 'churned'  THEN '90'
+    ELSE NULL
+  END                                                       AS contract_status_cd,
+  COALESCE(src.isActive, FALSE)                             AS is_active,
+  -- 金額は NUMERIC（FLOAT64 を使わない）。単位サフィックス必須
+  CAST(NULL AS NUMERIC)                                     AS annual_revenue_jpy,
+  -- 日時：_utc は TIMESTAMP（v2/11_naming_bigquery.md 4.1）
+  src.createdAt                                             AS record_created_at_utc,
+  src.updatedAt                                             AS record_updated_at_utc,
+
+  -- 監査項目：共通関数で付与する（各モデルに手書きしない）
+  -- ★MERGE は既定で全列を更新するため、そのままでは etl_loaded_at（初回挿入日時）が
+  --   毎回上書きされて意味を失う。incremental() のときだけ自テーブルへ LEFT JOIN し、
+  --   既存値を COALESCE で引き継ぐ（v2/21_transform.md 5.5）。
+  ${when(incremental(),
+    `COALESCE(prev.etl_loaded_at, ${loadedAt()})`,
+    `${loadedAt()}`)}                                       AS etl_loaded_at,
+  ${auditColumns("user_api")}
+
+FROM ${ref("bronze_user_api", "user")} AS src
+${when(incremental(), `LEFT JOIN ${self()} AS prev ON CAST(src.id AS STRING) = prev.account_id`)}
+WHERE src.id IS NOT NULL
+
+post_operations {
+  -- ---------------------------------------------------------------------------
+  -- 物理削除の検知（v2/21_transform.md 4節）
+  -- P1（全件洗替）なので、BRONZEに存在しない行はソース側で削除されたとみなせる。
+  -- 既に論理削除済みの行はスキャン対象から除外してコストを抑える。
+  -- ---------------------------------------------------------------------------
+  ${when(incremental(), `
+  UPDATE ${self()} AS tgt
+  SET
+    is_deleted     = TRUE,
+    etl_updated_at = TIMESTAMP('${dataform.projectConfig.vars.etl_ts}'),
+    etl_batch_id   = '${dataform.projectConfig.vars.batch_id}'
+  WHERE tgt.is_deleted = FALSE
+    AND NOT EXISTS (
+      SELECT 1
+      FROM ${ref("bronze_user_api", "user")} AS src
+      WHERE CAST(src.id AS STRING) = tgt.account_id
+    )
+  `)}
+}

@@ -1,0 +1,46 @@
+config {
+  type: "table",
+  schema: "gold_bi_tool",
+  name: "t_1m_monthly_pnl",
+  tags: ["gold", "gold_bi_tool"],
+  description: "月次の収支マート（物理化）。描画遅延の実測を根拠に v_ ではなく t_ にしている",
+  bigquery: {
+    partitionBy: "DATE_TRUNC(target_month, YEAR)",
+    clusterBy: ["target_month", "area_cd"]
+  },
+  columns: {
+    target_month: "対象月（月初日）",
+    area_cd: "エリアコード",
+    sales_amt_jpy: "売上金額（円）",
+    kpi_gross_profit_jpy: "【KPI】粗利（円）",
+    gross_profit_rate: "粗利率（0〜1）",
+    sales_amt_jpy_yoy: "売上金額の前年同月比",
+    mart_generated_at: "【監査】マートの物理生成日時（UTC）",
+    mart_refresh_type: "【監査】更新タイプ（FULL_REFRESH）"
+  }
+}
+
+-- GOLDの物理化は全件洗替を既定とする（type: "table" = CREATE OR REPLACE）。
+-- 差分更新にすると不整合の原因になる（v2/21_transform.md 3節）。
+WITH monthly AS (
+  SELECT
+    DATE_TRUNC(business_date, MONTH)  AS target_month,
+    area_cd,
+    SUM(sales_amt_jpy)                AS sales_amt_jpy,
+    SUM(kpi_gross_profit_jpy)         AS kpi_gross_profit_jpy
+  FROM ${ref("v_1d_daily_pnl")}
+  GROUP BY 1, 2
+)
+SELECT
+  target_month,
+  area_cd,
+  sales_amt_jpy,
+  kpi_gross_profit_jpy,
+  SAFE_DIVIDE(kpi_gross_profit_jpy, NULLIF(sales_amt_jpy, 0))  AS gross_profit_rate,
+  SAFE_DIVIDE(
+    sales_amt_jpy,
+    LAG(sales_amt_jpy, 12) OVER (PARTITION BY area_cd ORDER BY target_month)
+  )                                                            AS sales_amt_jpy_yoy,
+  TIMESTAMP('${dataform.projectConfig.vars.etl_ts}')           AS mart_generated_at,
+  'FULL_REFRESH'                                               AS mart_refresh_type
+FROM monthly

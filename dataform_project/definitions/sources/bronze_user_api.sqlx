@@ -1,0 +1,9 @@
+-- BRONZE層の参照定義（declaration）
+-- BRONZEのテーブル名・列名は取込処理／連携ツールの仕様に委ねる（v2/01_architecture.md 2節）。
+config {
+  type: "declaration",
+  database: dataform.projectConfig.defaultDatabase,
+  schema: "bronze_user_api",
+  name: "user",
+  description: "外部ユーザーAPIの生データ（crj-user-sync / P1 全件洗替）"
+}

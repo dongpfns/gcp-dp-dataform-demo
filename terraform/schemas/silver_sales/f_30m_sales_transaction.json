@@ -1,0 +1,18 @@
+[
+  { "name": "business_date",          "type": "DATE",      "mode": "REQUIRED", "description": "業務日付（JST基準で切った日付）。パーティション列" },
+  { "name": "store_cd",               "type": "STRING",    "mode": "REQUIRED", "description": "店舗コード（ゼロ埋め4桁）" },
+  { "name": "slot_started_at_jst",    "type": "DATETIME",  "mode": "REQUIRED", "description": "30分コマの開始時刻（JST壁時計時刻）" },
+  { "name": "slot_started_at_utc",    "type": "TIMESTAMP", "mode": "NULLABLE", "description": "30分コマの開始時刻（UTC絶対時刻）" },
+  { "name": "account_id",             "type": "STRING",    "mode": "NULLABLE", "description": "取引先ID（silver_common.d_account への結合キー）" },
+
+  { "name": "shipment_volume_ton",    "type": "NUMERIC",   "mode": "NULLABLE", "description": "出荷数量（トン）。※ return_volume_kg と単位が異なる点に注意" },
+  { "name": "return_volume_kg",       "type": "NUMERIC",   "mode": "NULLABLE", "description": "返品数量（キログラム）。※ shipment_volume_ton と単位が異なる点に注意" },
+  { "name": "unit_price_jpy_per_kg",  "type": "NUMERIC",   "mode": "NULLABLE", "description": "単価（円/キログラム）" },
+  { "name": "sales_amt_jpy",          "type": "NUMERIC",   "mode": "NULLABLE", "description": "売上金額（円）。ソース側が計上した実績値であり、当層では再計算しない" },
+
+  { "name": "etl_loaded_at",          "type": "TIMESTAMP", "mode": "REQUIRED", "description": "【監査】SILVER層への初回挿入日時（UTC）" },
+  { "name": "etl_updated_at",         "type": "TIMESTAMP", "mode": "REQUIRED", "description": "【監査】SILVER層のレコード最終更新日時（UTC）" },
+  { "name": "etl_source_system",      "type": "STRING",    "mode": "REQUIRED", "description": "【監査】由来ソースシステム名（file_csv）" },
+  { "name": "etl_batch_id",           "type": "STRING",    "mode": "REQUIRED", "description": "【監査】パイプライン実行ID（run_id）" },
+  { "name": "is_deleted",             "type": "BOOL",      "mode": "REQUIRED", "description": "【監査】論理削除フラグ。範囲洗替（P2）のウィンドウ内でのみ検知される" }
+]

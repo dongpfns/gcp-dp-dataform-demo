@@ -1,0 +1,71 @@
+name: dataform-ci
+# Dataform定義の検証。規約: v2/50_git_cicd.md 6節
+#   ★Dataformに「デプロイ」工程は存在しない★
+#   GitHubへマージした時点で次回のコンパイル対象が新しいコードになる。
+#   したがってCIの役割はデプロイではなく「検証（コンパイル + dry-run）」。
+
+on:
+  pull_request:
+    paths:
+      - "dataform_project/**"
+  push:
+    branches: [main]
+    paths:
+      - "dataform_project/**"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  SYSTEM: example
+  DATAFORM_VERSION: 3.0.2
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: install dataform cli
+        run: npm install -g @dataform/cli@${{ env.DATAFORM_VERSION }}
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: sa-transform@${{ env.SYSTEM }}-dev.iam.gserviceaccount.com
+
+      # definitions/ 外の .sqlx はコンパイルされず、テストが素通りする事故になる
+      - name: check all sqlx are under definitions/
+        working-directory: dataform_project
+        run: |
+          stray=$(find . -name '*.sqlx' -not -path './definitions/*' -not -path './node_modules/*')
+          if [ -n "$stray" ]; then
+            echo "definitions/ 外に .sqlx があります:"; echo "$stray"; exit 1
+          fi
+
+      - name: dataform install
+        working-directory: dataform_project
+        run: dataform install
+
+      # vars を渡さないと includes/audit_columns.js が undefined を埋めるため、
+      # CIでも必ずダミー値を渡す
+      - name: dataform compile
+        working-directory: dataform_project
+        run: |
+          dataform compile \
+            --default-database ${SYSTEM}-dev \
+            --vars env:dev,etl_ts:2026-01-01T00:00:00Z,batch_id:ci,window_months:14 \
+            --json > compile.json
+          test -s compile.json
+
+      - name: dataform run (dry-run)
+        working-directory: dataform_project
+        run: |
+          dataform run --dry-run \
+            --default-database ${SYSTEM}-dev \
+            --vars env:dev,etl_ts:2026-01-01T00:00:00Z,batch_id:ci,window_months:14

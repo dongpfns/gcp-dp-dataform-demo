@@ -1,0 +1,369 @@
+# =============================================================================
+# wf-main-daily.yaml : 日次パイプライン
+# 規約: v2/22_orchestration.md
+#
+# ★注意★ このファイルは Terraform の templatefile() で読み込まれる。
+#   ${...}  = Terraform の変数展開（gcp_project_id など）
+#   $${...} = Workflows 自身の式（Terraform に食われないようエスケープが必要）
+#   エスケープを忘れると terraform plan の時点でエラーになるか、
+#   意図しない空文字が埋め込まれる。
+#
+# 構成:
+#   init → ingest(crj-user-sync) → check_bronze → Dataform実行 → assert → 通知
+#   ※ CSVの取込は cf-gcs-csv-trigger が GCS のイベントで自動実行するため、
+#      このワークフローには含めない（イベント駆動とスケジュール駆動を混ぜない）。
+#   ※ Dataformは silver / gold のタグを1回の workflowInvocation で実行する
+#      （依存グラフはDataform側が解決するため、層ごとに分ける必要がない）。
+# =============================================================================
+
+main:
+  steps:
+    # -------------------------------------------------------------------------
+    # 1. 初期化：run_id と etl_ts を「1回だけ」採番する
+    #    各ステップで個別に時刻を取らない（v2/11_naming_bigquery.md 4.2 ルール5）
+    # -------------------------------------------------------------------------
+    - init:
+        assign:
+          - project_id: "${gcp_project_id}"
+          - region: "${region}"
+          - env: "${env}"
+          - workflow_name: "wf-main-daily"
+          - now_utc: $${time.format(sys.now(), "%Y-%m-%dT%H:%M:%SZ")}
+          - run_id: $${text.replace_all(text.replace_all(now_utc, "-", ""), ":", "") + "-" + workflow_name}
+          - etl_ts: $${now_utc}
+
+    - log_start:
+        call: sys.log
+        args:
+          severity: INFO
+          json:
+            run_id: $${run_id}
+            workflow_name: $${workflow_name}
+            event: "pipeline_started"
+
+    - record_start:
+        call: googleapis.bigquery.v2.jobs.query
+        args:
+          projectId: $${project_id}
+          body:
+            useLegacySql: false
+            query: >
+              INSERT INTO `${gcp_project_id}.${ops_audit_dataset}.job_run`
+                (run_id, workflow_name, status, started_at_utc)
+              VALUES (@run_id, 'wf-main-daily', 'RUNNING', CURRENT_TIMESTAMP())
+            parameterMode: NAMED
+            queryParameters:
+              - name: run_id
+                parameterType: { type: STRING }
+                parameterValue: { value: "$${run_id}" }
+
+    # -------------------------------------------------------------------------
+    # 2. 本体（エラーハンドラ付き）
+    # -------------------------------------------------------------------------
+    - pipeline:
+        try:
+          steps:
+            # ---------------------------------------------------------------
+            # 2-1. 取込（Cloud Run Job）
+            # ---------------------------------------------------------------
+            - ingest_user_sync:
+                call: googleapis.run.v1.namespaces.jobs.run
+                args:
+                  name: $${"namespaces/" + project_id + "/jobs/${job_user_sync}"}
+                  location: $${region}
+                  body:
+                    overrides:
+                      containerOverrides:
+                        - env:
+                            - name: "ETL_BATCH_ID"
+                              value: $${run_id}
+                            - name: "ETL_TS"
+                              value: $${etl_ts}
+
+            # ---------------------------------------------------------------
+            # 2-2. BRONZE品質チェック（NGなら後続を止める）
+            # ---------------------------------------------------------------
+            - check_bronze:
+                call: run_datacheck
+                args:
+                  project_id: $${project_id}
+                  run_id: $${run_id}
+                  check_name: "check_bronze_freshness"
+                  target_table: "bronze_user_api.user"
+                  query: >
+                    SELECT
+                      IF(COUNT(*) = 0, 'FAIL', 'PASS') AS status,
+                      CAST(COUNT(*) AS NUMERIC) AS actual_value
+                    FROM `${gcp_project_id}.bronze_user_api.user`
+                    WHERE _bronze_ingested_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 12 HOUR)
+                result: bronze_check
+
+            - branch_bronze_ng:
+                switch:
+                  - condition: $${bronze_check.status == "FAIL"}
+                    raise:
+                      message: "BRONZE品質チェックに失敗しました（鮮度NG）"
+                      step: "check_bronze"
+
+            # ---------------------------------------------------------------
+            # 2-3. Dataform実行
+            #   ★2段構え★
+            #   ① compilationResults.create : ここでしか vars を渡せない
+            #      （監査項目の etl_ts / batch_id を実行単位で確定させる）
+            #   ② workflowInvocations.create : ①の結果を指定して実行する
+            #   workflowInvocations に直接 vars は渡せない（v2/21_transform.md 5.3）。
+            # ---------------------------------------------------------------
+            - dataform_compile:
+                call: http.post
+                args:
+                  url: $${"https://dataform.googleapis.com/v1beta1/projects/" + project_id + "/locations/" + region + "/repositories/${dataform_repo}/compilationResults"}
+                  auth:
+                    type: OAuth2
+                  timeout: 300
+                  body:
+                    releaseConfig: $${"projects/" + project_id + "/locations/" + region + "/repositories/${dataform_repo}/releaseConfigs/${dataform_release}"}
+                    codeCompilationConfig:
+                      defaultDatabase: $${project_id}
+                      vars:
+                        env: $${env}
+                        etl_ts: $${etl_ts}
+                        batch_id: $${run_id}
+                        window_months: "14"
+                result: compilation
+
+            - dataform_invoke:
+                call: http.post
+                args:
+                  url: $${"https://dataform.googleapis.com/v1beta1/projects/" + project_id + "/locations/" + region + "/repositories/${dataform_repo}/workflowInvocations"}
+                  auth:
+                    type: OAuth2
+                  timeout: 300
+                  body:
+                    compilationResult: $${compilation.body.name}
+                    invocationConfig:
+                      includedTags: ["silver", "gold"]
+                      transitiveDependenciesIncluded: true
+                result: invocation
+
+            - dataform_wait:
+                call: wait_dataform
+                args:
+                  invocation_name: $${invocation.body.name}
+                  run_id: $${run_id}
+
+            # ---------------------------------------------------------------
+            # 2-4. SILVER品質チェック
+            #   Dataformのassertionsに加え、基盤側でも最低限を検証して記録する
+            # ---------------------------------------------------------------
+            - assert_silver:
+                call: run_datacheck
+                args:
+                  project_id: $${project_id}
+                  run_id: $${run_id}
+                  check_name: "check_silver_pk_unique"
+                  target_table: "silver_common.d_account"
+                  query: >
+                    SELECT
+                      IF(COUNT(*) = 0, 'PASS', 'FAIL') AS status,
+                      CAST(COUNT(*) AS NUMERIC) AS actual_value
+                    FROM (
+                      SELECT account_id
+                      FROM `${gcp_project_id}.silver_common.d_account`
+                      GROUP BY account_id
+                      HAVING COUNT(*) > 1
+                    )
+                result: silver_check
+
+            - branch_silver_ng:
+                switch:
+                  - condition: $${silver_check.status == "FAIL"}
+                    raise:
+                      message: "SILVER品質チェックに失敗しました（主キー重複）"
+                      step: "assert_silver"
+
+            - record_success:
+                call: googleapis.bigquery.v2.jobs.query
+                args:
+                  projectId: $${project_id}
+                  body:
+                    useLegacySql: false
+                    query: >
+                      UPDATE `${gcp_project_id}.${ops_audit_dataset}.job_run`
+                      SET status = 'SUCCEEDED', finished_at_utc = CURRENT_TIMESTAMP()
+                      WHERE run_id = @run_id
+                    parameterMode: NAMED
+                    queryParameters:
+                      - name: run_id
+                        parameterType: { type: STRING }
+                        parameterValue: { value: "$${run_id}" }
+
+            - return_success:
+                return:
+                  status: "SUCCEEDED"
+                  run_id: $${run_id}
+
+        # ---------------------------------------------------------------------
+        # 3. エラーハンドラ：必ず通知し、実行履歴を FAILED にする
+        # ---------------------------------------------------------------------
+        except:
+          as: e
+          steps:
+            - log_error:
+                call: sys.log
+                args:
+                  severity: ERROR
+                  json:
+                    run_id: $${run_id}
+                    workflow_name: $${workflow_name}
+                    event: "pipeline_failed"
+                    error: $${e}
+
+            - record_failure:
+                call: googleapis.bigquery.v2.jobs.query
+                args:
+                  projectId: $${project_id}
+                  body:
+                    useLegacySql: false
+                    query: >
+                      UPDATE `${gcp_project_id}.${ops_audit_dataset}.job_run`
+                      SET status = 'FAILED',
+                          finished_at_utc = CURRENT_TIMESTAMP(),
+                          error_message = @error_message
+                      WHERE run_id = @run_id
+                    parameterMode: NAMED
+                    queryParameters:
+                      - name: run_id
+                        parameterType: { type: STRING }
+                        parameterValue: { value: "$${run_id}" }
+                      - name: error_message
+                        parameterType: { type: STRING }
+                        parameterValue: { value: "$${text.substring(json.encode_to_string(e), 0, 1000)}" }
+
+            # 通知本文は assign で組み立てる。
+            # ★YAMLの複数行プレーンスカラーは ": " を含められないため、
+            #   json.encode({...}) を式の中で複数行に折り返すと不正なYAMLになる。
+            #   マップとして assign し、publish 側は1行の式にする。
+            - build_failure_payload:
+                assign:
+                  - log_url: $${"https://console.cloud.google.com/logs/query;query=jsonPayload.run_id%3D%22" + run_id + "%22?project=" + project_id}
+                  - failure_payload:
+                      run_id: $${run_id}
+                      workflow_name: $${workflow_name}
+                      env: $${env}
+                      error: $${json.encode_to_string(e)}
+                      log_url: $${log_url}
+
+            # cf-slack-notifier がこのトピックを購読して通知する
+            - notify_failure:
+                call: googleapis.pubsub.v1.projects.topics.publish
+                args:
+                  topic: $${"projects/" + project_id + "/topics/${topic_failed}"}
+                  body:
+                    messages:
+                      - data: $${base64.encode(json.encode(failure_payload))}
+
+            - reraise:
+                raise: $${e}
+
+# =============================================================================
+# サブワークフロー
+# =============================================================================
+
+# Dataformのワークフロー実行完了をポーリングする
+#   起動APIと状態取得APIが分かれているため、非同期起動 + ポーリングにする
+#   （v2/22_orchestration.md 2.2 ルール6）
+wait_dataform:
+  params: [invocation_name, run_id]
+  steps:
+    - init_poll:
+        assign:
+          - attempts: 0
+          - max_attempts: 120 # 30秒 x 120 = 最大60分
+
+    - poll:
+        call: http.get
+        args:
+          url: $${"https://dataform.googleapis.com/v1beta1/" + invocation_name}
+          auth:
+            type: OAuth2
+          timeout: 60
+        result: st
+
+    - evaluate:
+        switch:
+          - condition: $${st.body.state == "SUCCEEDED"}
+            next: done
+          - condition: $${st.body.state == "FAILED" or st.body.state == "CANCELLED"}
+            raise:
+              # ★式に ": " が含まれるため、YAMLでは引用符で囲む必要がある
+              #   （プレーンスカラーは ": " を含められない）
+              message: '$${"Dataform workflow invocation failed: " + st.body.state}'
+              step: "wait_dataform"
+          - condition: $${attempts >= max_attempts}
+            raise:
+              message: "Dataform workflow invocation timed out"
+              step: "wait_dataform"
+
+    - sleep:
+        call: sys.sleep
+        args:
+          seconds: 30
+
+    - increment:
+        assign:
+          - attempts: $${attempts + 1}
+        next: poll
+
+    - done:
+        return: $${st.body.state}
+
+# 品質チェックSQLを実行し、結果を ops_dataquality.check_result に記録する
+run_datacheck:
+  params: [project_id, run_id, check_name, target_table, query]
+  steps:
+    - execute:
+        call: googleapis.bigquery.v2.jobs.query
+        args:
+          projectId: $${project_id}
+          body:
+            useLegacySql: false
+            query: $${query}
+        result: q
+
+    - parse:
+        assign:
+          - status: $${q.rows[0].f[0].v}
+          - actual_value: $${q.rows[0].f[1].v}
+
+    - record:
+        call: googleapis.bigquery.v2.jobs.query
+        args:
+          projectId: $${project_id}
+          body:
+            useLegacySql: false
+            query: >
+              INSERT INTO `${gcp_project_id}.${ops_dq_dataset}.check_result`
+                (run_id, check_name, target_table, status, actual_value, checked_at_utc)
+              VALUES (@run_id, @check_name, @target_table, @status, CAST(@actual_value AS NUMERIC), CURRENT_TIMESTAMP())
+            parameterMode: NAMED
+            queryParameters:
+              - name: run_id
+                parameterType: { type: STRING }
+                parameterValue: { value: "$${run_id}" }
+              - name: check_name
+                parameterType: { type: STRING }
+                parameterValue: { value: "$${check_name}" }
+              - name: target_table
+                parameterType: { type: STRING }
+                parameterValue: { value: "$${target_table}" }
+              - name: status
+                parameterType: { type: STRING }
+                parameterValue: { value: "$${status}" }
+              - name: actual_value
+                parameterType: { type: STRING }
+                parameterValue: { value: "$${actual_value}" }
+
+    - done:
+        return:
+          status: $${status}
+          actual_value: $${actual_value}

@@ -1,0 +1,45 @@
+name: func-gcs-trigger
+# cf-gcs-csv-trigger（app/functions/gcs-csv-trigger/）のデプロイ。
+# Functionsごとにワークフローを分けているのは、変更監視（paths）を独立させるため。
+# デプロイはTerraform経由（コンソール・gcloud からの直接デプロイは禁止）。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/functions/gcs-csv-trigger/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  SYSTEM: example
+  TF_ENV: prd
+  TF_VERSION: 1.9.8
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: sa-terraform@${{ env.SYSTEM }}-${{ env.TF_ENV }}.iam.gserviceaccount.com
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform apply (this function only)
+        working-directory: terraform
+        run: |
+          terraform init -reconfigure -backend-config="bucket=${SYSTEM}-${TF_ENV}-tfstate"
+          terraform apply -auto-approve \
+            -var-file="environments/${TF_ENV}.tfvars" \
+            -target='google_storage_bucket_object.function_src["gcs-csv-trigger"]' \
+            -target='google_cloudfunctions2_function.gcs_csv_trigger'

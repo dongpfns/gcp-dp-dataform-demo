@@ -1,0 +1,101 @@
+config {
+  type: "incremental",
+  schema: "silver_sales",
+  name: "f_30m_sales_transaction",
+  // 複合キー：パーティション列 + 粒度列 + 結合キー列
+  uniqueKey: ["business_date", "store_cd", "slot_started_at_jst"],
+  tags: ["silver", "silver_sales"],
+  description: "売上トランザクション（30分粒度）。P2 範囲洗替・14か月ウィンドウ（月境界）",
+  bigquery: {
+    // 10年以上保持するため月単位。DATE_TRUNC(..., MONTH) が日単位との違い
+    // （v2/11_naming_bigquery.md 3.1：単一ジョブ4,000パーティション上限）
+    partitionBy: "DATE_TRUNC(business_date, MONTH)",
+    // 月単位パーティションでは基準日列を第1クラスタ列に置いて月内の絞り込みを補う
+    clusterBy: ["business_date", "store_cd", "account_id"],
+    // ★範囲条件②：Dataformがこの式を MERGE ... ON に差し込む（コスト最適化）
+    updatePartitionFilter: "business_date >= DATE_TRUNC(DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 14 MONTH), MONTH)"
+  },
+  assertions: {
+    uniqueKey: ["business_date", "store_cd", "slot_started_at_jst"],
+    nonNull: ["business_date", "store_cd", "slot_started_at_jst"]
+  },
+  columns: {
+    business_date: "業務日付（JST基準）。パーティション列",
+    store_cd: "店舗コード（ゼロ埋め4桁）",
+    slot_started_at_jst: "30分コマの開始時刻（JST壁時計時刻・DATETIME）",
+    slot_started_at_utc: "30分コマの開始時刻（UTC絶対時刻・TIMESTAMP）",
+    account_id: "ユーザーID（d_account への結合キー）",
+    shipment_volume_ton: "出荷数量（トン）※ return_volume_kg と単位が異なる",
+    return_volume_kg: "返品数量（キログラム）※ shipment_volume_ton と単位が異なる",
+    unit_price_jpy_per_kg: "単価（円/キログラム）",
+    sales_amt_jpy: "売上金額（円）。ソース計上値であり当層で再計算しない"
+  }
+}
+
+js {
+  const { auditColumns, loadedAt, windowStart } = require("includes/audit_columns");
+}
+
+SELECT
+  src.business_date,
+  LPAD(TRIM(src.store_code), 4, '0')                                            AS store_cd,
+  -- _jst は DATETIME（壁時計時刻）。TIMESTAMP を当てると名前と型の意味が矛盾する
+  CAST(PARSE_DATETIME('%Y-%m-%d %H:%M:%S', src.slot_start) AS DATETIME)         AS slot_started_at_jst,
+  -- _utc は TIMESTAMP（絶対時刻）
+  TIMESTAMP(PARSE_DATETIME('%Y-%m-%d %H:%M:%S', src.slot_start), 'Asia/Tokyo')  AS slot_started_at_utc,
+  NULLIF(TRIM(src.account_id), '')                                              AS account_id,
+
+  -- 単位サフィックス必須。ソース側の単位をそのまま列名に載せる（換算しない）
+  SAFE_CAST(src.shipment_volume AS NUMERIC)                                     AS shipment_volume_ton,
+  SAFE_CAST(src.return_volume AS NUMERIC)                                       AS return_volume_kg,
+  SAFE_CAST(src.unit_price AS NUMERIC)                                          AS unit_price_jpy_per_kg,
+  SAFE_CAST(src.sales_amount AS NUMERIC)                                        AS sales_amt_jpy,
+
+  -- etl_loaded_at は MERGE の全列更新で上書きされないよう引き継ぐ（v2/21_transform.md 5.5）
+  ${when(incremental(),
+    `COALESCE(prev.etl_loaded_at, ${loadedAt()})`,
+    `${loadedAt()}`)}                                                           AS etl_loaded_at,
+  ${auditColumns("file_csv")}
+
+FROM ${ref("bronze_file_csv", "sales_transaction")} AS src
+${when(incremental(), `
+LEFT JOIN ${self()} AS prev
+  ON  prev.business_date = src.business_date
+  AND prev.store_cd = LPAD(TRIM(src.store_code), 4, '0')
+  AND prev.slot_started_at_jst = CAST(PARSE_DATETIME('%Y-%m-%d %H:%M:%S', src.slot_start) AS DATETIME)
+  AND prev.business_date >= ${windowStart()}
+`)}
+WHERE src.business_date IS NOT NULL
+  AND src.store_code IS NOT NULL
+  -- ★範囲条件①：ソース側にも同じ式を掛ける。
+  --   updatePartitionFilter はターゲット側にしか効かないため、
+  --   ここを書き忘れると範囲外の行が NOT MATCHED → INSERT となり重複する。
+  -- ★${when(incremental(), ...)} で囲うこと。
+  --   囲わないと --full-refresh がウィンドウ内しか作り直さず、
+  --   「フルリフレッシュで復旧する」運用手順そのものが機能しなくなる。
+  ${when(incremental(), `AND src.business_date >= ${windowStart()}`)}
+
+post_operations {
+  -- ---------------------------------------------------------------------------
+  -- ★範囲条件③：物理削除の検知（誤削除防止）
+  --   WHERE にウィンドウ条件を必ず含める。含めないと範囲外の過去データが
+  --   「ソースに存在しない」と判定され、一括で論理削除される。
+  -- ---------------------------------------------------------------------------
+  ${when(incremental(), `
+  UPDATE ${self()} AS tgt
+  SET
+    is_deleted     = TRUE,
+    etl_updated_at = TIMESTAMP('${dataform.projectConfig.vars.etl_ts}'),
+    etl_batch_id   = '${dataform.projectConfig.vars.batch_id}'
+  WHERE tgt.business_date >= ${windowStart()}
+    AND tgt.is_deleted = FALSE
+    AND NOT EXISTS (
+      SELECT 1
+      FROM ${ref("bronze_file_csv", "sales_transaction")} AS src
+      WHERE src.business_date = tgt.business_date
+        AND LPAD(TRIM(src.store_code), 4, '0') = tgt.store_cd
+        AND CAST(PARSE_DATETIME('%Y-%m-%d %H:%M:%S', src.slot_start) AS DATETIME) = tgt.slot_started_at_jst
+        AND src.business_date >= ${windowStart()}
+    )
+  `)}
+}

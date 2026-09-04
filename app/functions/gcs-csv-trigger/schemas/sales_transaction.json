@@ -1,0 +1,10 @@
+[
+  { "name": "business_date",        "type": "DATE",      "mode": "REQUIRED", "description": "業務日付（ソース仕様: YYYY-MM-DD, JST基準）" },
+  { "name": "store_code",           "type": "STRING",    "mode": "NULLABLE", "description": "店舗コード（BRONZEはソース列名のまま。SILVERで store_cd にリネームする）" },
+  { "name": "slot_start",           "type": "STRING",    "mode": "NULLABLE", "description": "30分コマ開始時刻（ソース仕様: YYYY-MM-DD HH:MM:SS, JST）" },
+  { "name": "account_id",           "type": "STRING",    "mode": "NULLABLE", "description": "取引先ID" },
+  { "name": "shipment_volume",      "type": "STRING",    "mode": "NULLABLE", "description": "出荷数量（ソース単位: トン。文字列で受け、SILVERで NUMERIC 化する）" },
+  { "name": "return_volume",        "type": "STRING",    "mode": "NULLABLE", "description": "返品数量（ソース単位: キログラム）" },
+  { "name": "unit_price",           "type": "STRING",    "mode": "NULLABLE", "description": "単価（ソース単位: 円/キログラム）" },
+  { "name": "sales_amount",         "type": "STRING",    "mode": "NULLABLE", "description": "売上金額（円）" }
+]

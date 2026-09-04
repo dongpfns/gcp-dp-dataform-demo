@@ -1,0 +1,12 @@
+[
+  { "name": "id",                   "type": "STRING",    "mode": "REQUIRED", "description": "ユーザーID（BRONZEはソースの列名をそのまま保持する）" },
+  { "name": "userCode",             "type": "STRING",    "mode": "NULLABLE", "description": "ユーザーコード" },
+  { "name": "name",                 "type": "STRING",    "mode": "NULLABLE", "description": "氏名" },
+  { "name": "areaCode",             "type": "STRING",    "mode": "NULLABLE", "description": "エリアコード（SILVERで area_cd にリネームする）" },
+  { "name": "status",               "type": "STRING",    "mode": "NULLABLE", "description": "ステータス" },
+  { "name": "isActive",             "type": "BOOL",      "mode": "NULLABLE", "description": "有効フラグ" },
+  { "name": "createdAt",            "type": "TIMESTAMP", "mode": "NULLABLE", "description": "作成日時（UTC）" },
+  { "name": "updatedAt",            "type": "TIMESTAMP", "mode": "NULLABLE", "description": "更新日時（UTC）" },
+  { "name": "_bronze_ingested_at",  "type": "TIMESTAMP", "mode": "REQUIRED", "description": "【監査】BigQueryへの取込日時（UTC）" },
+  { "name": "_bronze_source_uri",   "type": "STRING",    "mode": "NULLABLE", "description": "【監査】取込元のエンドポイント" }
+]

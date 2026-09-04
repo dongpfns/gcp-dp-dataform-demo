@@ -1,0 +1,53 @@
+name: run-job-user-sync
+# crj-user-sync（app/run-jobs/user-sync-job/）のビルドとデプロイ。
+# Jobごとにワークフローを分けているのは、変更監視（paths）を独立させるため。
+# 規約: v2/12_naming_gcp_resources.md 3節（イメージタグはコミットSHA固定 / latest 禁止）
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/run-jobs/user-sync-job/**"
+      - "app/common/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  SYSTEM: example
+  TF_ENV: prd
+  REGION: asia-northeast1
+  JOB_NAME: crj-user-sync
+  IMAGE_NAME: user-sync-job
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: sa-terraform@${{ env.SYSTEM }}-${{ env.TF_ENV }}.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: build and push (tag = commit SHA)
+        run: |
+          PROJECT="${SYSTEM}-${TF_ENV}"
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/ar-images/${IMAGE_NAME}:${GITHUB_SHA}"
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          # ビルドコンテキストはリポジトリルート（app/common を同梱するため）
+          docker build -f app/run-jobs/${IMAGE_NAME}/Dockerfile -t "${IMAGE}" .
+          docker push "${IMAGE}"
+
+      - name: update Cloud Run Job
+        run: |
+          PROJECT="${SYSTEM}-${TF_ENV}"
+          gcloud run jobs update "${JOB_NAME}" \
+            --project="${PROJECT}" --region="${REGION}" \
+            --image="${REGION}-docker.pkg.dev/${PROJECT}/ar-images/${IMAGE_NAME}:${GITHUB_SHA}"

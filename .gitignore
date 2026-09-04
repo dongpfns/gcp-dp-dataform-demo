@@ -1,0 +1,36 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.secret.tfvars
+override.tf
+override.tf.json
+
+# ビルド成果物
+terraform/.build/
+
+# 認証情報（v2/30_iam_security.md 6節）
+*.json.key
+credentials*.json
+.env
+.df-credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# Dataform
+dataform_project/node_modules/
+dataform_project/.dataform/
+dataform_project/compile.json
+
+# OS
+.DS_Store
+Thumbs.db

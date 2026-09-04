@@ -1,0 +1,21 @@
+config {
+  type: "assertion",
+  schema: "ops_dataquality",
+  name: "assert_window_overflow",
+  tags: ["silver", "silver_sales"],
+  description: "範囲洗替（P2）のウィンドウ外に更新が届いていないかを検知する（v2/21_transform.md 4.3 ルール7）"
+}
+
+js {
+  const { windowStart } = require("includes/audit_columns");
+}
+
+-- ウィンドウ外に更新が届いた場合、その行は取り込まれず反映漏れになる。
+-- 重複を作るより、反映漏れを検知して手動でフルリフレッシュするほうが安全なため、
+-- このアサーションを常設する。行が返ると assertion 失敗となる。
+SELECT
+  business_date,
+  COUNT(*) AS overflow_row_count
+FROM ${ref("bronze_file_csv", "sales_transaction")}
+WHERE business_date < ${windowStart()}
+GROUP BY business_date

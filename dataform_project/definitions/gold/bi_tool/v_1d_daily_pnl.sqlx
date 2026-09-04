@@ -1,0 +1,51 @@
+config {
+  type: "view",
+  schema: "gold_bi_tool",
+  name: "v_1d_daily_pnl",
+  tags: ["gold", "gold_bi_tool"],
+  description: "日次の収支サマリ（BIツール向け）。派生指標はこの層でのみ生成する",
+  columns: {
+    business_date: "業務日付（JST）",
+    area_cd: "エリアコード",
+    shipment_volume_kg: "出荷数量（キログラム換算）",
+    return_volume_kg: "返品数量（キログラム）",
+    sales_amt_jpy: "売上金額（円）",
+    kpi_gross_profit_jpy: "【KPI】粗利（円）",
+    return_rate: "返品率（0〜1）",
+    sales_amt_jpy_yoy: "売上金額の前年同日比"
+  }
+}
+
+-- GOLDは既定でビュー。SELECT * は禁止（上流の列追加で下流が壊れるため）。
+-- 派生指標の命名は v2/11_naming_bigquery.md 4.3 に従う。
+WITH daily AS (
+  SELECT
+    f.business_date,
+    d.area_cd,
+    -- 単位を揃える換算はGOLDで行う（SILVERは単位を混在させたまま保持する）
+    SUM(f.shipment_volume_ton) * 1000                 AS shipment_volume_kg,
+    SUM(f.return_volume_kg)                           AS return_volume_kg,
+    SUM(f.sales_amt_jpy)                              AS sales_amt_jpy,
+    SUM(f.return_volume_kg * f.unit_price_jpy_per_kg) AS return_amt_jpy
+  FROM ${ref("f_30m_sales_transaction")} AS f
+  LEFT JOIN ${ref("d_account")} AS d
+    ON f.account_id = d.account_id
+   AND d.is_deleted = FALSE
+  WHERE f.is_deleted = FALSE
+    -- パーティションフィルタ必須（require_partition_filter = true）
+    AND f.business_date >= DATE_TRUNC(DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 26 MONTH), MONTH)
+  GROUP BY 1, 2
+)
+SELECT
+  business_date,
+  area_cd,
+  shipment_volume_kg,
+  return_volume_kg,
+  sales_amt_jpy,
+  sales_amt_jpy - return_amt_jpy                                    AS kpi_gross_profit_jpy,
+  SAFE_DIVIDE(return_volume_kg, NULLIF(shipment_volume_kg, 0))      AS return_rate,
+  SAFE_DIVIDE(
+    sales_amt_jpy,
+    LAG(sales_amt_jpy, 365) OVER (PARTITION BY area_cd ORDER BY business_date)
+  )                                                                 AS sales_amt_jpy_yoy
+FROM daily

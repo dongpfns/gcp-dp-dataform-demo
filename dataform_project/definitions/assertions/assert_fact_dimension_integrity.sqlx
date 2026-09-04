@@ -1,0 +1,18 @@
+config {
+  type: "assertion",
+  schema: "ops_dataquality",
+  name: "assert_fact_dimension_integrity",
+  tags: ["silver", "silver_sales"],
+  description: "ファクトの account_id がディメンションに存在することを検証する（参照整合性）"
+}
+
+SELECT
+  f.account_id,
+  COUNT(*) AS orphan_row_count
+FROM ${ref("f_30m_sales_transaction")} AS f
+LEFT JOIN ${ref("d_account")} AS d
+  ON f.account_id = d.account_id
+WHERE f.account_id IS NOT NULL
+  AND d.account_id IS NULL
+  AND f.business_date >= DATE_TRUNC(DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 14 MONTH), MONTH)
+GROUP BY f.account_id

@@ -1,0 +1,54 @@
+name: tf-apply
+# インフラ（Terraform）のデプロイ。規約: v2/50_git_cicd.md 5節
+#   - main へのマージで prd へ適用（Environment の承認ゲートを通す）
+#   - コンテナイメージのタグは各 run-job-*.yml が更新するため、ここでは触らない
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "app/workflows/**"
+      - "app/functions/**"
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "適用先環境"
+        required: true
+        default: dev
+        type: choice
+        options: [dev, stg, prd]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  SYSTEM: example
+  TF_VERSION: 1.9.8
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env || 'production' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: resolve environment
+        id: e
+        run: echo "env=${{ inputs.env || 'prd' }}" >> "$GITHUB_OUTPUT"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: sa-terraform@${{ env.SYSTEM }}-${{ steps.e.outputs.env }}.iam.gserviceaccount.com
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform apply
+        working-directory: terraform
+        run: |
+          terraform init -reconfigure -backend-config="bucket=${SYSTEM}-${{ steps.e.outputs.env }}-tfstate"
+          terraform apply -auto-approve -var-file="environments/${{ steps.e.outputs.env }}.tfvars"

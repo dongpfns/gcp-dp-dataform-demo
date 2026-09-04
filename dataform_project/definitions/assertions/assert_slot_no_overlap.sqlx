@@ -1,0 +1,17 @@
+config {
+  type: "assertion",
+  schema: "ops_dataquality",
+  name: "assert_slot_no_overlap",
+  tags: ["silver", "silver_sales"],
+  description: "同一コマ（日付×店舗×時間帯）の重複がないことを検証する（業務ルール）"
+}
+
+SELECT
+  business_date,
+  store_cd,
+  slot_started_at_jst,
+  COUNT(*) AS duplicate_count
+FROM ${ref("f_30m_sales_transaction")}
+WHERE business_date >= DATE_TRUNC(DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 14 MONTH), MONTH)
+GROUP BY 1, 2, 3
+HAVING COUNT(*) > 1

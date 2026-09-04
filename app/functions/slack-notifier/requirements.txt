@@ -1,0 +1,4 @@
+functions-framework==3.8.1
+cloudevents==1.11.0
+requests==2.32.3
+google-cloud-secret-manager==2.20.2

@@ -1,0 +1,26 @@
+[project]
+name = "gcp-dp-dataform-demo"
+version = "0.1.0"
+description = "GCPネイティブ データ基盤 デモプロジェクト（Dataform構成）"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+exclude = ["dataform_project", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["app"]
+
+[tool.sqlfluff.core]
+dialect = "bigquery"
+templater = "raw"
+max_line_length = 120
+
+[tool.sqlfluff.rules.capitalisation.keywords]
+capitalisation_policy = "upper"
