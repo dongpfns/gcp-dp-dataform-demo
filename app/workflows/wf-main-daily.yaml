@@ -3,10 +3,12 @@
 # 規約: v2/22_orchestration.md
 #
 # ★注意★ このファイルは Terraform の templatefile() で読み込まれる。
-#   ${...}  = Terraform の変数展開（gcp_project_id など）
-#   $${...} = Workflows 自身の式（Terraform に食われないようエスケープが必要）
-#   エスケープを忘れると terraform plan の時点でエラーになるか、
-#   意図しない空文字が埋め込まれる。
+#   ・Terraform の変数は「ドル記号1つ + 波括弧」で囲む（gcp_project_id など）
+#   ・Workflows 自身の式は「ドル記号2つ + 波括弧」で囲む（Terraform に食われないようエスケープする）
+#   ・エスケープを忘れると terraform plan の時点でエラーになるか、
+#     意図しない空文字が埋め込まれる。
+#   ・★コメント行も展開の対象★ なので、コメントに「ドル記号1つ + 波括弧」を
+#     書いてもエラーになる。記号を使わず日本語で説明すること。
 #
 # 構成:
 #   init → ingest(crj-user-sync) → check_bronze → Dataform実行 → assert → 通知
@@ -28,8 +30,12 @@ main:
           - region: "${region}"
           - env: "${env}"
           - workflow_name: "wf-main-daily"
-          - now_utc: $${time.format(sys.now(), "%Y-%m-%dT%H:%M:%SZ")}
-          - run_id: $${text.replace_all(text.replace_all(now_utc, "-", ""), ":", "") + "-" + workflow_name}
+          # time.format(seconds) は RFC3339（UTC）の文字列を返す。
+          # 第2引数はタイムゾーンであり、フォーマット文字列ではない。
+          # 小数秒が付く場合があるため、先頭19文字を切り出して "Z" を付け直す。
+          - now_epoch: $${sys.now()}
+          - now_utc: $${text.substring(time.format(now_epoch), 0, 19) + "Z"}
+          - run_id: $${text.replace_all(text.replace_all(text.substring(time.format(now_epoch), 0, 19), "-", ""), ":", "") + "Z-" + workflow_name}
           - etl_ts: $${now_utc}
 
     - log_start:
