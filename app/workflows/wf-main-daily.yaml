@@ -28,7 +28,8 @@ main:
         assign:
           - project_id: "${gcp_project_id}"
           - region: "${region}"
-          - env: "${env}"
+          # env は Cloud Workflows の予約変数のため使えない。env_code とする
+          - env_code: "${env}"
           - workflow_name: "wf-main-daily"
           # time.format(seconds) は RFC3339（UTC）の文字列を返す。
           # 第2引数はタイムゾーンであり、フォーマット文字列ではない。
@@ -131,7 +132,7 @@ main:
                     codeCompilationConfig:
                       defaultDatabase: $${project_id}
                       vars:
-                        env: $${env}
+                        env: $${env_code}
                         etl_ts: $${etl_ts}
                         batch_id: $${run_id}
                         window_months: "14"
@@ -255,7 +256,7 @@ main:
                   - failure_payload:
                       run_id: $${run_id}
                       workflow_name: $${workflow_name}
-                      env: $${env}
+                      env: $${env_code}
                       error: $${json.encode_to_string(e)}
                       log_url: $${log_url}
 
